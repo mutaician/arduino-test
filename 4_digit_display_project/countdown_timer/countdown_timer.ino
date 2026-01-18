@@ -1,10 +1,11 @@
 /*
-  Arduino Countdown Timer (MM:SS Format)
-  Input: Type seconds into Serial Monitor (e.g., 90 -> 01:30)
+  4-Digit Countdown Timer with SIREN ALARM
+  - Input: Type seconds in Serial Monitor (e.g., 10)
+  - Output: Countdown -> Siren on Pin 13
 */
 
 // --- PINS ---
-// Segments A-G (via Resistors)
+// Segments A-G (Via Resistors)
 const int segA = 2;
 const int segB = 3;
 const int segC = 4;
@@ -14,17 +15,23 @@ const int segF = 7;
 const int segG = 8;
 
 // Digits (Direct connection)
-const int d1 = 10; // Tens of Minutes
-const int d2 = 11; // Minutes
-const int d3 = 12; // Tens of Seconds
-const int d4 = 9;  // Seconds (MOVED TO PIN 9)
+const int d1 = 10;
+const int d2 = 11;
+const int d3 = 12;
+const int d4 = 9;  // Keep this on 9!
+
+const int buzzerPin = 13; // NEW: Buzzer on Pin 13
 
 // --- VARIABLES ---
-long totalSeconds = 0;          // The main counter
+long totalSeconds = 0;
 unsigned long previousMillis = 0;
-const long interval = 1000;     // 1 second speed
+const long interval = 1000;
 
-// Number Patterns (0-9)
+// Alarm State
+bool isRunning = false;
+bool isAlarming = false;
+
+// Digits 0-9 Pattern
 const byte numbers[10][7] = {
   {1, 1, 1, 1, 1, 1, 0}, // 0
   {0, 1, 1, 0, 0, 0, 0}, // 1
@@ -39,81 +46,103 @@ const byte numbers[10][7] = {
 };
 
 void setup() {
-  // Setup Pins
   for(int i=2; i<=12; i++) pinMode(i, OUTPUT);
-  pinMode(9, OUTPUT); 
-  
+  pinMode(9, OUTPUT);
+  pinMode(buzzerPin, OUTPUT);
+
   // Digits OFF
-  digitalWrite(d1, HIGH);
-  digitalWrite(d2, HIGH);
-  digitalWrite(d3, HIGH);
-  digitalWrite(d4, HIGH);
-  
-  // Start Serial Monitor
+  digitalWrite(d1, HIGH); digitalWrite(d2, HIGH);
+  digitalWrite(d3, HIGH); digitalWrite(d4, HIGH);
+
   Serial.begin(9600);
-  Serial.println("ENTER SECONDS TO COUNTDOWN:");
+  Serial.println("READY: Enter Seconds to Start.");
 }
 
 void loop() {
-  // --- PART 1: CHECK FOR INPUT ---
+  // --- 1. INPUT HANDLER ---
   if (Serial.available() > 0) {
-    // Read the integer typed by the user
-    int inputTime = Serial.parseInt();
-    
-    // Clear the buffer (ignore newline characters)
-    while (Serial.available() > 0) Serial.read();
-    
-    if (inputTime > 0) {
-       totalSeconds = inputTime;
-       Serial.print("Timer Set: ");
-       Serial.println(totalSeconds);
+    int input = Serial.parseInt();
+    // Clear excess characters
+    while(Serial.available() > 0) Serial.read();
+
+    if (input > 0) {
+      totalSeconds = input;
+      isRunning = true;
+      isAlarming = false;
+      Serial.print("Counting down: "); Serial.println(input);
+    } else {
+      // Typing '0' kills the alarm
+      totalSeconds = 0;
+      isRunning = false;
+      isAlarming = false;
+      noTone(buzzerPin); // Silence immediately
+      Serial.println("STOPPED.");
     }
   }
 
-  // --- PART 2: THE CLOCK (Tick Tock) ---
+  // --- 2. TIMER LOGIC ---
   unsigned long currentMillis = millis();
   if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;
     
-    // Only count down if we have time remaining
-    if (totalSeconds > 0) {
+    if (isRunning && totalSeconds > 0) {
       totalSeconds--;
-      
-      // Optional: Beep logic could go here
       if (totalSeconds == 0) {
-        Serial.println("DONE!");
+        isRunning = false;
+        isAlarming = true; // Trigger the siren
+        Serial.println("TIME UP! (Type 0 to stop)");
       }
     }
   }
 
-  // --- PART 3: THE MATH (Seconds -> MM:SS) ---
-  // Example: 90 seconds
-  // Minutes = 90 / 60 = 1
-  // Seconds = 90 % 60 = 30
-  
-  int minutes = totalSeconds / 60;
-  int seconds = totalSeconds % 60;
+// --- 3. CASIO WATCH ALARM LOGIC ---
+  if (isAlarming) {
+    // Cycle duration: 1000ms (1 second)
+    int rhythm = millis() % 1000;
+    
+    // The Frequency: 1046Hz is a crisp "Digital Watch" High C
+    int pitch = 4096;
 
-  int digit1_val = (minutes / 10) % 10; // Tens of Mins
-  int digit2_val = minutes % 10;        // Units of Mins
-  int digit3_val = (seconds / 10) % 10; // Tens of Secs
-  int digit4_val = seconds % 10;        // Units of Secs
+    // Beep 1: 0 to 100ms
+    if (rhythm >= 0 && rhythm < 100) {
+       tone(buzzerPin, pitch);
+    }
+    // Gap: 100 to 200ms (Silence)
+    else if (rhythm >= 100 && rhythm < 200) {
+       noTone(buzzerPin);
+    }
+    // Beep 2: 200 to 300ms
+    else if (rhythm >= 200 && rhythm < 300) {
+       tone(buzzerPin, pitch);
+    }
+    // Long Pause: 300 to 1000ms
+    else {
+       noTone(buzzerPin);
+    }
+  } else {
+    noTone(buzzerPin);
+  }
 
-  // --- PART 4: THE DISPLAY (Multiplexing) ---
-  displayDigit(d1, digit1_val);
-  delay(4);
-  displayDigit(d2, digit2_val);
-  delay(4);
-  displayDigit(d3, digit3_val);
-  delay(4);
-  displayDigit(d4, digit4_val);
-  delay(4);
+  // --- 4. DISPLAY LOGIC ---
+  int mins = totalSeconds / 60;
+  int secs = totalSeconds % 60;
+
+  displayDigit(d1, (mins / 10) % 10);
+  delay(3);
+  displayDigit(d2, mins % 10);
+  delay(3);
+  displayDigit(d3, (secs / 10) % 10);
+  delay(3);
+  displayDigit(d4, secs % 10);
+  delay(3);
 }
 
 void displayDigit(int digitPin, int number) {
+  // Turn OFF all digits
   digitalWrite(d1, HIGH); digitalWrite(d2, HIGH);
   digitalWrite(d3, HIGH); digitalWrite(d4, HIGH);
 
+  // Set Segments
   digitalWrite(segA, numbers[number][0]);
   digitalWrite(segB, numbers[number][1]);
   digitalWrite(segC, numbers[number][2]);
@@ -122,5 +151,6 @@ void displayDigit(int digitPin, int number) {
   digitalWrite(segF, numbers[number][5]);
   digitalWrite(segG, numbers[number][6]);
 
+  // Turn ON target digit
   digitalWrite(digitPin, LOW);
 }
