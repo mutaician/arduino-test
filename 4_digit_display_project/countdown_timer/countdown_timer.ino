@@ -1,29 +1,27 @@
 /*
-  FINAL ROBUST TIMER
-  - Non-Blocking Serial Buffer (Fixes "Start" failure)
-  - Casio Double-Beep Alarm
-  - Pins: Digits 10,11,12,9 | Segments 2-8 | Buzzer 13
+  SMART CLOCK & TIMER FIRMWARE
+  - Protocol: 'C' for Clock update, 'T' for Timer start, 'X' for Stop.
 */
 
 // --- PINS ---
 const int segA = 2; const int segB = 3; const int segC = 4;
 const int segD = 5; const int segE = 6; const int segF = 7; const int segG = 8;
 const int d1 = 10; const int d2 = 11; const int d3 = 12; 
-const int d4 = 9;  // Digit 4 is on Pin 9
-const int buzzerPin = 13; // Buzzer on Pin 13
+const int d4 = 9;  // Digit 4 on Pin 9
+const int buzzerPin = 13;
 
-// --- VARIABLES ---
-long totalSeconds = 0;
+// --- STATE VARIABLES ---
+enum Mode { MODE_CLOCK, MODE_TIMER, MODE_ALARM };
+Mode currentMode = MODE_CLOCK;
+
+// Display Data
+int displayDigits[4] = {0, 0, 0, 0}; // Holds the 4 numbers to show
+
+// Timer Variables
+long timerSeconds = 0;
 unsigned long previousMillis = 0;
-const long interval = 1000;
-bool isRunning = false;
-bool isAlarming = false;
 
-// Serial Buffer
-String inputString = "";      // Holds incoming characters
-bool stringComplete = false;  // Flags when \n is received
-
-// Digits 0-9
+// Digits 0-9 Patterns
 const byte numbers[10][7] = {
   {1, 1, 1, 1, 1, 1, 0}, {0, 1, 1, 0, 0, 0, 0}, {1, 1, 0, 1, 1, 0, 1}, {1, 1, 1, 1, 0, 0, 1},
   {0, 1, 1, 0, 0, 1, 1}, {1, 0, 1, 1, 0, 1, 1}, {1, 0, 1, 1, 1, 1, 1}, {1, 1, 1, 0, 0, 0, 0},
@@ -34,113 +32,125 @@ void setup() {
   for(int i=2; i<=12; i++) pinMode(i, OUTPUT);
   pinMode(9, OUTPUT);
   pinMode(buzzerPin, OUTPUT);
-
-  noTone(buzzerPin);
-  digitalWrite(d1, HIGH); digitalWrite(d2, HIGH);
-  digitalWrite(d3, HIGH); digitalWrite(d4, HIGH);
-
+  
+  // Startup Sequence: Show dashes
+  loadDisplay(11, 11, 11, 11);
   Serial.begin(9600);
-  inputString.reserve(10); // Pre-allocate memory
-  Serial.println("READY");
 }
 
 void loop() {
-  // --- 1. READ DATA (Character by Character) ---
-  // This never pauses the loop.
-  while (Serial.available()) {
-    char inChar = (char)Serial.read();
-    // If it's a number, add it to buffer
-    if (isDigit(inChar)) {
-      inputString += inChar;
-    }
-    // If it's a newline (Command Finished)
-    if (inChar == '\n') {
-      stringComplete = true;
-    }
-  }
+  // --- 1. LISTEN FOR COMMANDS ---
+  if (Serial.available() > 0) {
+    char cmd = Serial.read(); // Read first letter (C, T, or X)
+    int value = Serial.parseInt(); // Read the number following it
 
-  // --- 2. PROCESS COMMAND ---
-  if (stringComplete) {
-    if (inputString.length() > 0) {
-      int val = inputString.toInt();
-      if (val > 0) {
-        // START
-        totalSeconds = val;
-        isRunning = true;
-        isAlarming = false;
-        Serial.println(totalSeconds);
-      } else {
-        // STOP (0 received)
-        totalSeconds = 0;
-        isRunning = false;
-        isAlarming = false;
-        noTone(buzzerPin);
-        Serial.println(0);
-      }
-    }
-    // Reset Buffer
-    inputString = "";
-    stringComplete = false;
-  }
+    // Consume newline
+    while(Serial.available() > 0) Serial.read();
 
-  // --- 3. TIMER LOGIC ---
-  unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis >= interval) {
-    previousMillis = currentMillis;
-    
-    if (isRunning && totalSeconds > 0) {
-      totalSeconds--;
-      Serial.println(totalSeconds);
-      if (totalSeconds == 0) {
-        isRunning = false;
-        isAlarming = true;
-      }
-    }
-  }
-
-  // --- 4. CASIO ALARM LOGIC ---
-  if (isAlarming) {
-    int rhythm = millis() % 1000;
-    // Use 1046Hz (High C) or 880Hz (A5)
-    int pitch = 4096;
-    
-    // Pattern: BEEP (0-100) ... BEEP (200-300) ... Silence
-    if ((rhythm >= 0 && rhythm < 100) || (rhythm >= 200 && rhythm < 300)) {
-       tone(buzzerPin, pitch);
-    } else {
+    if (cmd == 'C') {
+       // CLOCK MODE: Received HHMM (e.g. 1230)
+       currentMode = MODE_CLOCK;
        noTone(buzzerPin);
+       updateDisplayFromNumber(value);
     }
-  } else {
-    noTone(buzzerPin);
+    else if (cmd == 'T') {
+       // TIMER MODE: Received Seconds (e.g. 90)
+       currentMode = MODE_TIMER;
+       timerSeconds = value;
+       noTone(buzzerPin);
+       updateDisplayFromTimer(timerSeconds);
+    }
+    else if (cmd == 'X') {
+       // STOP / RESET
+       currentMode = MODE_CLOCK;
+       noTone(buzzerPin);
+       // We will wait for next 'C' command to update display
+    }
   }
 
-  // --- 5. DISPLAY REFRESH ---
-  refreshDisplay(totalSeconds);
-}
-
-void refreshDisplay(int val) {
-  int mins = val / 60;
-  int secs = val % 60;
+  // --- 2. HANDLE TIME LOGIC ---
+  unsigned long currentMillis = millis();
   
-  displayDigit(d1, (mins / 10) % 10);
-  delay(3);
-  displayDigit(d2, mins % 10);
-  delay(3);
-  displayDigit(d3, (secs / 10) % 10);
-  delay(3);
-  displayDigit(d4, secs % 10);
-  delay(3);
+  if (currentMode == MODE_TIMER) {
+     if (currentMillis - previousMillis >= 1000) {
+       previousMillis = currentMillis;
+       if (timerSeconds > 0) {
+         timerSeconds--;
+         updateDisplayFromTimer(timerSeconds);
+         Serial.println(timerSeconds); // Feedback to web
+       } else {
+         currentMode = MODE_ALARM;
+         Serial.println("DONE");
+       }
+     }
+  }
+
+  // --- 3. HANDLE ALARM ---
+  if (currentMode == MODE_ALARM) {
+      // Casio Double Beep
+      int rhythm = millis() % 1000;
+      if ((rhythm >= 0 && rhythm < 100) || (rhythm >= 200 && rhythm < 300)) {
+         tone(buzzerPin, 1046);
+      } else {
+         noTone(buzzerPin);
+      }
+      // Blink "0000"
+      if (millis() % 500 < 250) updateDisplayFromNumber(0);
+      else loadDisplay(10,10,10,10); // Blank
+  }
+
+  // --- 4. REFRESH DISPLAY ---
+  renderDisplay();
 }
 
-void displayDigit(int digitPin, int number) {
-  digitalWrite(d1, HIGH); digitalWrite(d2, HIGH);
-  digitalWrite(d3, HIGH); digitalWrite(d4, HIGH);
-  digitalWrite(segA, numbers[number][0]);
-  digitalWrite(segB, numbers[number][1]);
-  digitalWrite(segC, numbers[number][2]);
-  digitalWrite(segD, numbers[number][3]);
-  digitalWrite(segE, numbers[number][4]);
-  digitalWrite(segF, numbers[number][5]);
-  digitalWrite(segG, numbers[number][6]);
-  digitalWrite(digitPin, LOW);
+// --- HELPERS ---
+
+void updateDisplayFromNumber(int num) {
+  // Expects HHMM format (e.g. 1230)
+  displayDigits[0] = (num / 1000) % 10;
+  displayDigits[1] = (num / 100) % 10;
+  displayDigits[2] = (num / 10) % 10;
+  displayDigits[3] = num % 10;
+}
+
+void updateDisplayFromTimer(long totalSecs) {
+  // Converts Seconds to MM:SS
+  int mins = totalSecs / 60;
+  int secs = totalSecs % 60;
+  displayDigits[0] = (mins / 10) % 10;
+  displayDigits[1] = mins % 10;
+  displayDigits[2] = (secs / 10) % 10;
+  displayDigits[3] = secs % 10;
+}
+
+void loadDisplay(int a, int b, int c, int d) {
+  displayDigits[0] = a; displayDigits[1] = b; 
+  displayDigits[2] = c; displayDigits[3] = d;
+}
+
+void renderDisplay() {
+  int pins[] = {d1, d2, d3, d4};
+  for (int i=0; i<4; i++) {
+     // Turn OFF all digits
+     digitalWrite(d1, HIGH); digitalWrite(d2, HIGH); 
+     digitalWrite(d3, HIGH); digitalWrite(d4, HIGH);
+
+     // Skip if number is 10 (Blank)
+     if (displayDigits[i] != 10) {
+       // Set segments
+       // Special case: If number is 11, show Dash (Optional, using index 0 for now)
+       int num = displayDigits[i];
+       digitalWrite(segA, numbers[num][0]);
+       digitalWrite(segB, numbers[num][1]);
+       digitalWrite(segC, numbers[num][2]);
+       digitalWrite(segD, numbers[num][3]);
+       digitalWrite(segE, numbers[num][4]);
+       digitalWrite(segF, numbers[num][5]);
+       digitalWrite(segG, numbers[num][6]);
+       
+       // Turn ON specific digit
+       digitalWrite(pins[i], LOW);
+     }
+     delay(3); 
+  }
 }

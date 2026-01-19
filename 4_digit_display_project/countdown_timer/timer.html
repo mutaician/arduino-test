@@ -3,147 +3,100 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Arduino Sync Timer</title>
+    <title>Smart Arduino Clock</title>
     <style>
-        body { font-family: 'Courier New', monospace; text-align: center; background: #222; color: #0f0; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-        
-        /* The Digital Display Look */
-        #webDisplay {
-            font-size: 120px;
-            font-weight: bold;
-            background: #000;
-            padding: 20px 40px;
-            border: 5px solid #444;
-            border-radius: 10px;
-            box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
-            margin-bottom: 30px;
-        }
-
-        input { font-size: 24px; padding: 10px; width: 100px; text-align: center; background: #333; color: #fff; border: 2px solid #555; }
-        button { font-size: 20px; padding: 10px 25px; margin: 10px; cursor: pointer; border: none; border-radius: 5px; font-weight: bold; }
-        .btn-connect { background-color: #007bff; color: white; }
-        .btn-start { background-color: #28a745; color: white; }
-        .btn-stop { background-color: #dc3545; color: white; }
-        
-        #controls { opacity: 0.2; pointer-events: none; transition: opacity 0.3s; }
+        body { background: #111; color: #0f0; font-family: monospace; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        #display { font-size: 80px; border: 4px solid #333; padding: 20px; border-radius: 10px; margin-bottom: 20px; background: #000; }
+        .mode-label { color: #666; font-size: 14px; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 5px; }
+        button { font-size: 18px; padding: 10px 20px; cursor: pointer; border: none; border-radius: 5px; margin: 5px; }
+        .btn-connect { background: #007bff; color: white; }
+        .btn-start { background: #28a745; color: white; }
+        .btn-stop { background: #dc3545; color: white; }
+        input { font-size: 20px; padding: 10px; width: 80px; text-align: center; background: #222; color: white; border: 1px solid #444; }
     </style>
 </head>
 <body>
 
-    <!-- The Big Web Display -->
-    <div id="webDisplay">00:00</div>
+    <div class="mode-label" id="modeLabel">Disconnected</div>
+    <div id="display">--:--</div>
 
-    <!-- Connection Button -->
-    <button id="connectBtn" class="btn-connect" onclick="connectSerial()">
-        🔌 Connect to Arduino
-    </button>
+    <div id="setupPanel">
+        <button class="btn-connect" onclick="connectSerial()">🔌 Connect Arduino</button>
+    </div>
 
-    <!-- Controls -->
-    <div id="controls">
-        <input type="number" id="secondsInput" value="10" min="1">
-        <br>
-        <button class="btn-start" onclick="sendCommand()">▶ START</button>
-        <button class="btn-stop" onclick="stopTimer()">⏹ STOP</button>
+    <div id="controlPanel" style="display:none;">
+        <input type="number" id="timerInput" value="10" min="1">
+        <button class="btn-start" onclick="startTimer()">Start Timer</button>
+        <button class="btn-stop" onclick="stopTimer()">Stop / Show Clock</button>
     </div>
 
     <script>
-        let port;
-        let writer;
-        let keepReading = false;
+        let port, writer;
+        let clockInterval;
+        let isTimerRunning = false;
 
         async function connectSerial() {
             try {
                 port = await navigator.serial.requestPort();
                 await port.open({ baudRate: 9600 });
-
-                // UI Updates
-                document.getElementById("connectBtn").style.display = "none";
-                document.getElementById("controls").style.opacity = "1";
-                document.getElementById("controls").style.pointerEvents = "auto";
-
-                // Set up the Writer (To send commands)
+                
                 const textEncoder = new TextEncoderStream();
-                const writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
+                textEncoder.readable.pipeTo(port.writable);
                 writer = textEncoder.writable.getWriter();
 
-                // Set up the Reader (To listen for updates)
-                readSerialLoop();
+                document.getElementById("setupPanel").style.display = "none";
+                document.getElementById("controlPanel").style.display = "block";
+                
+                // Start sending Clock Time immediately
+                startClockMode();
 
-            } catch (err) {
-                console.error("Connection Error:", err);
-                alert("Could not connect. Ensure code is uploaded and Serial Monitor is closed.");
-            }
+            } catch (e) { alert("Connection failed"); }
         }
 
-        async function readSerialLoop() {
-            const textDecoder = new TextDecoderStream();
-            const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
-            const reader = textDecoder.readable.getReader();
-            keepReading = true;
-
-            try {
-                while (keepReading) {
-                    const { value, done } = await reader.read();
-                    if (done) { break; }
-                    
-                    // value might contain multiple lines or chunks. 
-                    // We need to trim whitespace and parse the number.
-                    if (value) {
-                        processIncomingData(value);
-                    }
-                }
-            } catch (error) {
-                console.error("Read Error:", error);
-            } finally {
-                reader.releaseLock();
-            }
+        function startClockMode() {
+            isTimerRunning = false;
+            document.getElementById("modeLabel").innerText = "REAL TIME CLOCK";
+            document.getElementById("modeLabel").style.color = "#0f0";
+            
+            // Send time every second
+            if (clockInterval) clearInterval(clockInterval);
+            clockInterval = setInterval(sendClockTime, 1000);
+            sendClockTime(); // Send once immediately
         }
 
-        // Buffer to handle fragmented data chunks
-        let buffer = "";
+        async function sendClockTime() {
+            if (isTimerRunning || !writer) return;
 
-        function processIncomingData(chunk) {
-            buffer += chunk;
+            const now = new Date();
+            let hh = now.getHours().toString().padStart(2, '0');
+            let mm = now.getMinutes().toString().padStart(2, '0');
             
-            // Check if we have a full line (newline character)
-            let lines = buffer.split("\n");
-            
-            // Process all full lines
-            while (lines.length > 1) {
-                let line = lines.shift().trim();
-                if (line.length > 0 && !isNaN(line)) {
-                    updateDisplay(parseInt(line));
-                }
-            }
-            
-            // Keep the remaining incomplete chunk in the buffer
-            buffer = lines[0];
+            // Update Web UI
+            document.getElementById("display").innerText = `${hh}:${mm}`;
+
+            // Send to Arduino: "C" + HHMM (e.g., "C1430")
+            await writer.write("C" + hh + mm + "\n");
         }
 
-        function updateDisplay(totalSeconds) {
-            let mins = Math.floor(totalSeconds / 60);
-            let secs = totalSeconds % 60;
-            
-            // Format as MM:SS (e.g., 01:05)
-            let minsStr = mins.toString().padStart(2, '0');
-            let secsStr = secs.toString().padStart(2, '0');
-            
-            document.getElementById("webDisplay").innerText = `${minsStr}:${secsStr}`;
-        }
+        async function startTimer() {
+            // 1. Stop sending clock updates
+            isTimerRunning = true;
+            clearInterval(clockInterval);
 
-        async function sendCommand() {
-            let val = document.getElementById("secondsInput").value;
-            if (writer) {
-                await writer.write(val + "\n");
-                console.log("Sent Start: " + val);
-            }
+            // 2. Get seconds and Send "T" command
+            let secs = document.getElementById("timerInput").value;
+            document.getElementById("modeLabel").innerText = "TIMER RUNNING";
+            document.getElementById("modeLabel").style.color = "#ff9900";
+            
+            await writer.write("T" + secs + "\n");
         }
 
         async function stopTimer() {
-            if (writer) {
-                await writer.write("0\n");
-                console.log("Sent Stop");
-            }
+            // Send Stop command
+            if (writer) await writer.write("X\n");
+            
+            // Resume Clock Mode
+            startClockMode();
         }
     </script>
 </body>
