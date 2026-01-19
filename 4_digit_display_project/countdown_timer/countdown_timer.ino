@@ -106,6 +106,7 @@ void loop() {
 // --- HELPERS ---
 
 void updateDisplayFromNumber(int num) {
+  Serial.println(num);
   // Expects HHMM format (e.g. 1230)
   displayDigits[0] = (num / 1000) % 10;
   displayDigits[1] = (num / 100) % 10;
